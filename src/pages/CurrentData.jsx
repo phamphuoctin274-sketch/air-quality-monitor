@@ -1,323 +1,212 @@
 import React, { useState, useEffect } from 'react';
-import { getHistoricalData } from '../services/firebaseService';
-import { calculatePM25AQI, getAQICategory, getAQIAdvice } from '../utils/aqi';
-import { formatDateTime, parseDateTime, formatDateISO, formatTimeISO } from '../utils/dateUtils';
-import { exportHistoryToExcel } from '../utils/excelExport';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend
+} from 'chart.js';
+import { Line } from 'react-chartjs-2';
+import { getCurrentData, getDataWithinTimeRange } from '../services/firebaseService';
+import { calculateOverallAQI, getAQICategory, getAQIAdvice } from '../utils/aqi';
+import { formatDateTime, formatRelativeTime, getLastHours } from '../utils/dateUtils';
 
-const History = () => {
-  const [data, setData] = useState([]);
-  const [filteredData, setFilteredData] = useState([]);
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend
+);
+
+const CurrentData = () => {
+  const [currentData, setCurrentData] = useState(null);
+  const [historicalData, setHistoricalData] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [startDate, setStartDate] = useState(formatDateISO(new Date(Date.now() - 86400000))); // Yesterday
-  const [startTime, setStartTime] = useState('00:00');
-  const [endDate, setEndDate] = useState(formatDateISO(new Date()));
-  const [endTime, setEndTime] = useState('23:59');
-  const [sortBy, setSortBy] = useState('timestamp');
-  const [sortOrder, setSortOrder] = useState('desc');
-  const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 10;
-  const [selectedRows, setSelectedRows] = useState([]);
-  const [filterAQILevel, setFilterAQILevel] = useState('all');
+  const [timeRange, setTimeRange] = useState('3h');
+  const [customHours, setCustomHours] = useState(3);
+  const [chartData, setChartData] = useState(null);
+  const [showCustomInput, setShowCustomInput] = useState(false);
 
   useEffect(() => {
-    loadHistoricalData();
+    loadCurrentData();
   }, []);
 
   useEffect(() => {
-    filterAndSortData();
-  }, [data, startDate, startTime, endDate, endTime, sortBy, sortOrder, filterAQILevel]);
+    loadHistoricalData();
+  }, [timeRange, customHours]);
 
-  const loadHistoricalData = () => {
+  const loadCurrentData = () => {
     setLoading(true);
-    const startDateTime = parseDateTime(startDate, startTime);
-    const endDateTime = parseDateTime(endDate, endTime);
-
-    getHistoricalData(startDateTime, endDateTime, (result) => {
+    getCurrentData((result) => {
       if (result.success) {
-        const dataWithAQI = result.data.map(item => ({
-          ...item,
-          aqi: calculatePM25AQI(item.pm25 || 0),
-          aqiLevel: getAQICategory(calculatePM25AQI(item.pm25 || 0)).category
-        }));
-        setData(dataWithAQI);
+        setCurrentData(result.data);
       }
       setLoading(false);
     });
   };
 
-  const filterAndSortData = () => {
-    let filtered = [...data];
-
-    // Filter by AQI level
-    if (filterAQILevel !== 'all') {
-      filtered = filtered.filter(item => item.aqiLevel === filterAQILevel);
-    }
-
-    // Sort
-    filtered.sort((a, b) => {
-      let aValue = a[sortBy];
-      let bValue = b[sortBy];
-
-      if (sortBy === 'timestamp') {
-        aValue = new Date(aValue).getTime();
-        bValue = new Date(bValue).getTime();
-      }
-
-      if (sortOrder === 'asc') {
-        return aValue > bValue ? 1 : -1;
-      } else {
-        return aValue < bValue ? 1 : -1;
+  const loadHistoricalData = () => {
+    const hours = timeRange === 'custom' ? customHours : parseInt(timeRange);
+    getDataWithinTimeRange(hours, (result) => {
+      if (result.success) {
+        setHistoricalData(result.data);
+        updateChartData(result.data);
       }
     });
-
-    setFilteredData(filtered);
-    setCurrentPage(1);
   };
 
-  const handleDateRangeChange = (e) => {
-    const { name, value } = e.target;
-    switch (name) {
-      case 'startDate':
-        setStartDate(value);
-        break;
-      case 'startTime':
-        setStartTime(value);
-        break;
-      case 'endDate':
-        setEndDate(value);
-        break;
-      case 'endTime':
-        setEndTime(value);
-        break;
-      default:
-        break;
-    }
-  };
-
-  const handleApplyFilter = () => {
-    loadHistoricalData();
-  };
-
-  const handleExportExcel = () => {
-    const exportData = selectedRows.length > 0 
-      ? filteredData.filter(item => selectedRows.includes(item.id))
-      : filteredData;
-
-    if (exportData.length === 0) {
-      alert('Vui lòng chọn dữ liệu để xuất');
+  const updateChartData = (data) => {
+    if (!data || data.length === 0) {
+      setChartData(null);
       return;
     }
 
-    const result = exportHistoryToExcel(exportData, `air-quality-${new Date().getTime()}.xlsx`);
-    if (result.success) {
-      alert(result.message);
-    } else {
-      alert('Lỗi: ' + result.message);
+    const labels = data.map(item => {
+      const date = new Date(item.timestamp);
+      return date.toLocaleTimeString('vi-VN', { 
+        hour: '2-digit', 
+        minute: '2-digit' 
+      });
+    });
+
+    setChartData({
+      labels,
+      datasets: [
+        {
+          label: 'Nhiệt độ (°C)',
+          data: data.map(item => item.temperature || 0),
+          borderColor: '#FF6B6B',
+          backgroundColor: 'rgba(255, 107, 107, 0.1)',
+          tension: 0.4,
+          fill: true,
+          yAxisID: 'y'
+        },
+        {
+          label: 'Độ ẩm (%)',
+          data: data.map(item => item.humidity || 0),
+          borderColor: '#4ECDC4',
+          backgroundColor: 'rgba(78, 205, 196, 0.1)',
+          tension: 0.4,
+          fill: true,
+          yAxisID: 'y1'
+        },
+        {
+          label: 'PM2.5 (µg/m³)',
+          data: data.map(item => item.pm25 || 0),
+          borderColor: '#FFD93D',
+          backgroundColor: 'rgba(255, 217, 61, 0.1)',
+          tension: 0.4,
+          fill: true,
+          yAxisID: 'y2'
+        }
+      ]
+    });
+  };
+
+  const handleTimeRangeChange = (range) => {
+    setTimeRange(range);
+    if (range !== 'custom') {
+      setShowCustomInput(false);
     }
   };
 
-  const toggleRowSelection = (id) => {
-    setSelectedRows(prev =>
-      prev.includes(id)
-        ? prev.filter(rid => rid !== id)
-        : [...prev, id]
+  const handleCustomHoursChange = (e) => {
+    const value = parseInt(e.target.value) || 1;
+    setCustomHours(Math.max(1, Math.min(168, value))); // Min 1 hour, Max 7 days
+  };
+
+  const applyCustomHours = () => {
+    setTimeRange('custom');
+    loadHistoricalData();
+  };
+
+  if (loading && !currentData) {
+    return (
+      <div className="page">
+        <div className="loading">
+          <div className="spinner"></div>
+        </div>
+      </div>
     );
-  };
+  }
 
-  const toggleAllSelection = () => {
-    if (selectedRows.length === filteredData.length) {
-      setSelectedRows([]);
-    } else {
-      setSelectedRows(filteredData.map(item => item.id));
-    }
-  };
-
-  const handleSort = (column) => {
-    if (sortBy === column) {
-      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortBy(column);
-      setSortOrder('asc');
-    }
-  };
-
-  const paginatedData = filteredData.slice(
-    (currentPage - 1) * itemsPerPage,
-    currentPage * itemsPerPage
-  );
-
-  const totalPages = Math.ceil(filteredData.length / itemsPerPage);
-
-  const getAQIStatusIcon = (aqi) => {
-    if (aqi <= 50) return <span style={{ color: '#4caf50' }}><i className="fas fa-check-circle"></i></span>;
-    if (aqi <= 100) return <span style={{ color: '#8bc34a' }}><i className="fas fa-info-circle"></i></span>;
-    if (aqi <= 150) return <span style={{ color: '#ffc107' }}><i className="fas fa-exclamation-circle"></i></span>;
-    return <span style={{ color: '#f44336' }}><i className="fas fa-times-circle"></i></span>;
-  };
+  const aqi = currentData ? calculateOverallAQI(
+    currentData.pm25 || 0,
+    currentData.pm10 || 0,
+    0
+  ) : 0;
+  const aqiInfo = getAQICategory(aqi);
 
   return (
     <div className="page">
       <div className="card">
         <h2 className="card-title">
-          <i className="fas fa-history"></i>
-          Lịch sử chất lượng không khí
+          <i className="fas fa-wind"></i>
+          Dữ liệu chất lượng không khí hiện tại
         </h2>
 
-        <div className="grid-2">
-          <div className="form-group">
-            <label>Ngày bắt đầu:</label>
-            <input
-              type="date"
-              name="startDate"
-              value={startDate}
-              onChange={handleDateRangeChange}
-            />
-          </div>
-          <div className="form-group">
-            <label>Thời gian bắt đầu:</label>
-            <input
-              type="time"
-              name="startTime"
-              value={startTime}
-              onChange={handleDateRangeChange}
-            />
-          </div>
-          <div className="form-group">
-            <label>Ngày kết thúc:</label>
-            <input
-              type="date"
-              name="endDate"
-              value={endDate}
-              onChange={handleDateRangeChange}
-            />
-          </div>
-          <div className="form-group">
-            <label>Thời gian kết thúc:</label>
-            <input
-              type="time"
-              name="endTime"
-              value={endTime}
-              onChange={handleDateRangeChange}
-            />
-          </div>
-        </div>
-
-        <div className="form-group">
-          <label>Lọc theo mức AQI:</label>
-          <select value={filterAQILevel} onChange={(e) => setFilterAQILevel(e.target.value)}>
-            <option value="all">Tất cả</option>
-            <option value="Good">Tốt</option>
-            <option value="Fair">Bình thường</option>
-            <option value="Moderate">Trung bình</option>
-            <option value="Poor">Xấu</option>
-            <option value="Very Poor">Rất xấu</option>
-          </select>
-        </div>
-
-        <div className="button-group">
-          <button className="button button-success" onClick={handleApplyFilter}>
-            <i className="fas fa-search"></i> Tìm kiếm
-          </button>
-          <button className="button button-success" onClick={handleExportExcel}>
-            <i className="fas fa-download"></i> Tải Excel
-          </button>
-        </div>
-      </div>
-
-      <div className="card">
-        <h2 className="card-title">
-          <i className="fas fa-table"></i>
-          Bảng dữ liệu ({filteredData.length} bản ghi)
-        </h2>
-
-        {loading ? (
-          <div className="loading">
-            <div className="spinner"></div>
-          </div>
-        ) : filteredData.length === 0 ? (
-          <div className="alert alert-info">
-            <i className="fas fa-info-circle"></i>
-            Không tìm thấy dữ liệu nào
-          </div>
-        ) : (
+        {currentData && (
           <>
-            <div className="table-responsive">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>
-                      <input
-                        type="checkbox"
-                        checked={selectedRows.length === filteredData.length && filteredData.length > 0}
-                        onChange={toggleAllSelection}
-                      />
-                    </th>
-                    <th onClick={() => handleSort('timestamp')} style={{ cursor: 'pointer' }}>
-                      Thời gian {sortBy === 'timestamp' && (sortOrder === 'asc' ? '↑' : '↓')}
-                    </th>
-                    <th onClick={() => handleSort('temperature')} style={{ cursor: 'pointer' }}>
-                      Nhiệt độ (°C) {sortBy === 'temperature' && (sortOrder === 'asc' ? '↑' : '↓')}
-                    </th>
-                    <th onClick={() => handleSort('humidity')} style={{ cursor: 'pointer' }}>
-                      Độ ẩm (%) {sortBy === 'humidity' && (sortOrder === 'asc' ? '↑' : '↓')}
-                    </th>
-                    <th onClick={() => handleSort('pm25')} style={{ cursor: 'pointer' }}>
-                      PM 2.5 (µg/m³) {sortBy === 'pm25' && (sortOrder === 'asc' ? '↑' : '↓')}
-                    </th>
-                    <th onClick={() => handleSort('pm10')} style={{ cursor: 'pointer' }}>
-                      PM 10 (µg/m³) {sortBy === 'pm10' && (sortOrder === 'asc' ? '↑' : '↓')}
-                    </th>
-                    <th onClick={() => handleSort('aqi')} style={{ cursor: 'pointer' }}>
-                      AQI {sortBy === 'aqi' && (sortOrder === 'asc' ? '↑' : '↓')}
-                    </th>
-                    <th>Mức</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {paginatedData.map(item => (
-                    <tr key={item.id}>
-                      <td>
-                        <input
-                          type="checkbox"
-                          checked={selectedRows.includes(item.id)}
-                          onChange={() => toggleRowSelection(item.id)}
-                        />
-                      </td>
-                      <td>{formatDateTime(item.timestamp)}</td>
-                      <td>{item.temperature?.toFixed(1) || '--'}</td>
-                      <td>{item.humidity?.toFixed(1) || '--'}</td>
-                      <td>{item.pm25?.toFixed(1) || '--'}</td>
-                      <td>{item.pm10?.toFixed(1) || '--'}</td>
-                      <td>{item.aqi}</td>
-                      <td>
-                        {getAQIStatusIcon(item.aqi)} {item.aqiLevel}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="alert alert-info">
+              <i className="fas fa-info-circle"></i>
+              Cập nhật lần cuối: {formatRelativeTime(currentData.timestamp)}
             </div>
 
-            <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                Trang {currentPage} / {totalPages}
+            <div className="data-grid">
+              <div className="data-card">
+                <div className="data-card-label">Nhiệt độ</div>
+                <div className="data-card-value">{currentData.temperature || '--'}</div>
+                <div className="data-card-unit">°C</div>
               </div>
-              <div className="button-group">
-                <button
-                  className="button button-sm"
-                  onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
-                  disabled={currentPage === 1}
-                >
-                  <i className="fas fa-chevron-left"></i> Trước
-                </button>
-                <button
-                  className="button button-sm"
-                  onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
-                  disabled={currentPage === totalPages}
-                >
-                  Sau <i className="fas fa-chevron-right"></i>
-                </button>
+              <div className="data-card">
+                <div className="data-card-label">Độ ẩm</div>
+                <div className="data-card-value">{currentData.humidity || '--'}</div>
+                <div className="data-card-unit">%</div>
               </div>
+              <div className="data-card">
+                <div className="data-card-label">PM 2.5</div>
+                <div className="data-card-value">{currentData.pm25 || '--'}</div>
+                <div className="data-card-unit">µg/m³</div>
+              </div>
+              <div className="data-card">
+                <div className="data-card-label">PM 10</div>
+                <div className="data-card-value">{currentData.pm10 || '--'}</div>
+                <div className="data-card-unit">µg/m³</div>
+              </div>
+              <div className="data-card">
+                <div className="data-card-label">AQI</div>
+                <div className="data-card-value">{aqi}</div>
+                <div style={{ 
+                  marginTop: '10px',
+                  padding: '5px 10px',
+                  backgroundColor: 'rgba(255,255,255,0.2)',
+                  borderRadius: '5px',
+                  fontSize: '12px'
+                }}>
+                  {aqiInfo.category}
+                </div>
+              </div>
+            </div>
+
+            <div className={`alert ${
+              aqi <= 50 ? 'alert-success' :
+              aqi <= 100 ? 'alert-info' :
+              aqi <= 150 ? 'alert-warning' :
+              'alert-danger'
+            }`}>
+              <i className={`fas ${
+                aqi <= 50 ? 'fa-check-circle' :
+                aqi <= 100 ? 'fa-info-circle' :
+                aqi <= 150 ? 'fa-exclamation-circle' :
+                'fa-times-circle'
+              }`}></i>
+              {getAQIAdvice(aqi)}
             </div>
           </>
         )}
@@ -325,29 +214,103 @@ const History = () => {
 
       <div className="card">
         <h2 className="card-title">
-          <i className="fas fa-lightbulb"></i>
-          Hướng dẫn giải thích AQI
+          <i className="fas fa-chart-area"></i>
+          Biểu đồ khoảng thời gian
         </h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
-          <div style={{ padding: '15px', backgroundColor: '#e8f5e9', borderRadius: '8px', borderLeft: '4px solid #4caf50' }}>
-            <strong>Tốt (0-50):</strong> Không có vấn đề sức khỏe
-          </div>
-          <div style={{ padding: '15px', backgroundColor: '#f1f8e9', borderRadius: '8px', borderLeft: '4px solid #8bc34a' }}>
-            <strong>Bình thường (51-100):</strong> Có thể gây ảnh hưởng nhỏ
-          </div>
-          <div style={{ padding: '15px', backgroundColor: '#fffde7', borderRadius: '8px', borderLeft: '4px solid #ffc107' }}>
-            <strong>Trung bình (101-150):</strong> Có thể gây ảnh hưởng sức khỏe
-          </div>
-          <div style={{ padding: '15px', backgroundColor: '#fff3e0', borderRadius: '8px', borderLeft: '4px solid #ff9800' }}>
-            <strong>Xấu (151-200):</strong> Ảnh hưởng sức khỏe cao
-          </div>
-          <div style={{ padding: '15px', backgroundColor: '#ffebee', borderRadius: '8px', borderLeft: '4px solid #f44336' }}>
-            <strong>Rất xấu (201+):</strong> Ảnh hưởng sức khỏe rất cao
-          </div>
+
+        <div className="time-filter">
+          <button 
+            className={timeRange === '3h' ? 'button active' : 'button'}
+            onClick={() => handleTimeRangeChange('3h')}
+          >
+            3 giờ qua
+          </button>
+          <button 
+            className={timeRange === '6h' ? 'button active' : 'button'}
+            onClick={() => handleTimeRangeChange('6h')}
+          >
+            6 giờ qua
+          </button>
+          <button 
+            className={timeRange === 'custom' ? 'button active' : 'button'}
+            onClick={() => setShowCustomInput(!showCustomInput)}
+          >
+            <i className="fas fa-cog"></i> Tùy chỉnh
+          </button>
         </div>
+
+        {showCustomInput && (
+          <div className="form-group">
+            <label>Nhập số giờ (1-168):</label>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <input
+                type="number"
+                value={customHours}
+                onChange={handleCustomHoursChange}
+                min="1"
+                max="168"
+              />
+              <button className="button button-success" onClick={applyCustomHours}>
+                <i className="fas fa-check"></i> Áp dụng
+              </button>
+            </div>
+          </div>
+        )}
+
+        {chartData && (
+          <div className="chart-container">
+            <Line
+              data={chartData}
+              options={{
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                  mode: 'index',
+                  intersect: false,
+                },
+                plugins: {
+                  legend: {
+                    position: 'top',
+                  },
+                  title: {
+                    display: false,
+                  },
+                },
+                scales: {
+                  y: {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
+                    title: {
+                      display: true,
+                      text: 'Nhiệt độ (°C) / Độ ẩm (%)'
+                    }
+                  },
+                  y1: {
+                    type: 'linear',
+                    display: false,
+                    position: 'left'
+                  },
+                  y2: {
+                    type: 'linear',
+                    display: false,
+                    position: 'right'
+                  }
+                },
+              }}
+            />
+          </div>
+        )}
+
+        {!chartData && (
+          <div className="alert alert-info">
+            <i className="fas fa-info-circle"></i>
+            Không có dữ liệu để hiển thị biểu đồ
+          </div>
+        )}
       </div>
     </div>
   );
 };
 
-export default History;
+export default CurrentData;
